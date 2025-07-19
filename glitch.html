@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Digital Static Weaver</title>
+    <style>
+        body {
+            font-family: 'monospace', monospace; /* Using a web-safe monospace font for glitch aesthetic */
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden; /* Prevent scrollbars from glitch effects */
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            max-width: 1200px;
+            padding: 20px;
+            box-sizing: border-box;
+            gap: 20px;
+            flex-grow: 1; /* Allows container to grow and take available space */
+        }
+
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            background-color: #2a2a2a;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+            flex-shrink: 0; /* Prevents controls from shrinking */
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        label {
+            font-size: 0.9em;
+            margin-bottom: 3px;
+        }
+
+        input[type="file"],
+        textarea,
+        input[type="range"],
+        select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #444;
+            background-color: #3a3a3a;
+            color: #e0e0e0;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-size: 1em;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            height: 8px;
+            background: #555;
+            outline: none;
+            opacity: 0.7;
+            transition: opacity .2s;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #00bcd4; /* Accent color */
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #00bcd4;
+            cursor: pointer;
+        }
+
+        canvas {
+            background-color: #000;
+            border: 1px solid #444;
+            display: block;
+            width: 100%; /* Make canvas fill its container's width */
+            flex-grow: 1; /* Allow canvas to take available vertical space */
+            border-radius: 8px;
+        }
+
+        /* Responsive layout for larger screens */
+        @media (min-width: 768px) {
+            .container {
+                flex-direction: row; /* Controls and canvas side-by-side */
+                align-items: flex-start;
+                height: calc(100vh - 40px); /* Fill remaining viewport height, considering padding */
+            }
+            .controls {
+                width: 300px; /* Fixed width for controls on larger screens */
+                min-width: 280px;
+                max-height: 100%; /* Ensure controls don't overflow vertically */
+                overflow-y: auto; /* Scroll if controls content is too long */
+            }
+            canvas {
+                height: 100%; /* Canvas takes full height of its container */
+                width: auto; /* Width will be determined by flex-grow */
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="controls">
+            <h2>Digital Static Weaver</h2>
+            <div class="control-group">
+                <label for="imageUpload">Upload Image:</label>
+                <input type="file" id="imageUpload" accept="image/*">
+            </div>
+            <div class="control-group">
+                <label for="textInput">Type Text:</label>
+                <textarea id="textInput" placeholder="Enter your text here..."></textarea>
+            </div>
+            <div class="control-group">
+                <label for="intensitySlider">Glitch Intensity:</label>
+                <input type="range" id="intensitySlider" min="0" max="1" step="0.01" value="0.2">
+            </div>
+            <div class="control-group">
+                <label for="distortionTypeSelect">Distortion Type:</label>
+                <select id="distortionTypeSelect">
+                    <option value="shift">Image: Pixel Shift</option>
+                    <option value="color_jumble">Image: Color Jumble</option>
+                    <option value="jitter">Text: Jitter</option>
+                    <option value="color_ghost">Text: Color Ghost</option>
+                </select>
+            </div>
+        </div>
+        <canvas id="glitchCanvas"></canvas>
+    </div>
+
+    <script>
+        // Get DOM elements
+        const canvas = document.getElementById('glitchCanvas');
+        const ctx = canvas.getContext('2d');
+        const imageUploadInput = document.getElementById('imageUpload');
+        const textInput = document.getElementById('textInput');
+        const intensitySlider = document.getElementById('intensitySlider');
+        const distortionTypeSelect = document.getElementById('distortionTypeSelect');
+
+        // Global state variables
+        let currentImage = null; // Stores the loaded Image object
+        let currentText = ''; // Stores the text from textarea
+        let intensity = parseFloat(intensitySlider.value); // Current glitch intensity
+        let distortionType = distortionTypeSelect.value; // Current distortion type
+        let animationFrameId = null; // Stores the ID of the current animation frame
+
+        /**
+         * Helper function to get pixel data at a specific coordinate from an ImageData object.
+         * @param {ImageData} imageData The ImageData object to read from.
+         * @param {number} x X-coordinate.
+         * @param {number} y Y-coordinate.
+         * @returns {{r: number, g: number, b: number, a: number}} RGBA values. Returns transparent black for out-of-bounds.
+         */
+        function getPixel(imageData, x, y) {
+            if (x < 0 || x >= imageData.width || y < 0 || y >= imageData.height) {
+                return { r: 0, g: 0, b: 0, a: 0 };
+            }
+            const index = (y * imageData.width + x) * 4;
+            return {
+                r: imageData.data[index],
+                g: imageData.data[index + 1],
+                b: imageData.data[index + 2],
+                a: imageData.data[index + 3]
+            };
+        }
+
+        /**
+         * Helper function to set pixel data at a specific coordinate in an ImageData object.
+         * @param {ImageData} imageData The ImageData object to write to.
+         * @param {number} x X-coordinate.
+         * @param {number} y Y-coordinate.
+         * @param {number} r Red value (0-255).
+         * @param {number} g Green value (0-255).
+         * @param {number} b Blue value (0-255).
+         * @param {number} a Alpha value (0-255).
+         */
+        function setPixel(imageData, x, y, r, g, b, a) {
+            if (x < 0 || x >= imageData.width || y < 0 || y >= imageData.height) {
+                return; // Do nothing if out of bounds
+            }
+            const index = (y * imageData.width + x) * 4;
+            imageData.data[index] = r;
+            imageData.data[index + 1] = g;
+            imageData.data[index + 2] = b;
+            imageData.data[index + 3] = a;
+        }
+
+        /**
+         * Applies glitch effects directly to an image's pixel data.
+         * Works on a copy of the original pixel data to ensure consistent reads during modification.
+         * @param {ImageData} imageData The ImageData object to manipulate (will be modified in place).
+         * @param {number} intensity Level of distortion (0-1).
+         * @param {string} type Type of distortion ('shift' or 'color_jumble').
+         */
+        function applyImageGlitch(imageData, intensity, type) {
+            const originalData = new Uint8ClampedArray(imageData.data); // Create a copy of the original pixel data
+            const width = imageData.width;
+            const height = imageData.height;
+
+            if (type === 'shift') {
+                // Apply block shifting/displacement effect
+                const numBlocks = Math.floor(intensity * 20); // Number of blocks to shift, scales with intensity
+                for (let i = 0; i < numBlocks; i++) {
+                    // Define random block size and position
+                    const blockWidth = Math.max(1, Math.floor(Math.random() * (width * 0.1) + intensity * 15));
+                    const blockHeight = Math.max(1, Math.floor(Math.random() * (height * 0.1) + intensity * 15));
+                    const x = Math.floor(Math.random() * (width - blockWidth));
+                    const y = Math.floor(Math.random() * (height - blockHeight));
+
+                    // Define random shift amount
+                    const dx = Math.floor((Math.random() * 2 - 1) * intensity * 70); // Horizontal shift amount
+                    const dy = Math.floor((Math.random() * 2 - 1) * intensity * 70); // Vertical shift amount
+
+                    // Copy pixels from the original block location (from originalData)
+                    // to the new displaced location (in imageData.data)
+                    for (let row = 0; row < blockHeight; row++) {
+                        for (let col = 0; col < blockWidth; col++) {
+                            const srcX = x + col;
+                            const srcY = y + row;
+                            const destX = srcX + dx;
+                            const destY = srcY + dy;
+
+                            const srcIndex = (srcY * width + srcX) * 4;
+                            if (srcX >= 0 && srcX < width && srcY >= 0 && srcY < height) {
+                                setPixel(imageData, destX, destY,
+                                    originalData[srcIndex],
+                                    originalData[srcIndex + 1],
+                                    originalData[srcIndex + 2],
+                                    originalData[srcIndex + 3]
+                                );
+                            }
+                        }
+                    }
+                }
+            } else if (type === 'color_jumble') {
+                // Apply color channel jumbling/noise effect
+                for (let y = 0; y < height; y++) {
+                    for (let x = 0; x < width; x++) {
+                        const index = (y * width + x) * 4;
+                        const r = originalData[index];
+                        const g = originalData[index + 1];
+                        const b = originalData[index + 2];
+                        const a = originalData[index + 3];
+
+                        // Add/subtract random values to R, G, B channels based on intensity
+                        const noiseAmount = Math.floor(Math.random() * intensity * 120); // Max 120 for intensity=1
+                        imageData.data[index] = Math.min(255, Math.max(0, r + (Math.random() * 2 - 1) * noiseAmount));
+                        imageData.data[index + 1] = Math.min(255, Math.max(0, g + (Math.random() * 2 - 1) * noiseAmount));
+                        imageData.data[index + 2] = Math.min(255, Math.max(0, b + (Math.random() * 2 - 1) * noiseAmount));
+                        imageData.data[index + 3] = a; // Keep original alpha
+                    }
+                }
+            }
+        }
+
+        /**
+         * Renders a single line of text with specific glitch effects.
+         * Used internally by applyTextGlitch.
+         */
+        function renderLine(line, x, y, intensity, type, fontSize) {
+            let charX = x;
+            for (let k = 0; k < line.length; k++) {
+                const char = line[k];
+                const charWidth = ctx.measureText(char).width;
+
+                let offsetX = 0;
+                let offsetY = 0;
+                let charOpacity = 1;
+                let charColor = 'white';
+
+                if (type === 'jitter') {
+                    // Apply small random offsets to each character for jitter effect
+                    offsetX = (Math.random() * 2 - 1) * intensity * 25; // Max +/- 25 for intensity=1
+                    offsetY = (Math.random() * 2 - 1) * intensity * 25;
+                    charOpacity = 1 - (Math.random() * intensity * 0.6); // Fade slightly, max 60% opacity
+                } else if (type === 'color_ghost') {
+                    // Draw multiple ghostly versions of the character with different colors/offsets
+                    const ghostCount = Math.floor(intensity * 7) + 1; // 1 to 8 ghosts
+                    for (let g = 0; g < ghostCount; g++) {
+                        const ghostOffsetX = (Math.random() * 2 - 1) * intensity * 15;
+                        const ghostOffsetY = (Math.random() * 2 - 1) * intensity * 15;
+                        const hue = Math.floor(Math.random() * 360); // Random hue for color
+                        ctx.fillStyle = `hsl(${hue}, 100%, 50%)`;
+                        ctx.globalAlpha = 0.2 + (0.3 * (1 - intensity)); // Ghost transparency, more intense = less opaque
+                        ctx.fillText(char, charX + ghostOffsetX, y + ghostOffsetY);
+                    }
+                    charColor = 'white'; // Main character remains white
+                    charOpacity = 1; // Main character is fully opaque
+                }
+                
+                // Draw the main character (or the single glitched version for 'jitter')
+                ctx.fillStyle = charColor;
+                ctx.globalAlpha = charOpacity;
+                ctx.fillText(char, charX + offsetX, y + offsetY);
+                ctx.globalAlpha = 1; // Reset global alpha for next drawing operation
+
+                charX += charWidth; // Advance X for the next character
+            }
+        }
+
+        /**
+         * Applies glitch effects to text and draws it on the canvas. Handles text wrapping.
+         * @param {string} text The text string to draw.
+         * @param {number} intensity Level of distortion (0-1).
+         * @param {string} type Type of distortion ('jitter' or 'color_ghost').
+         */
+        function applyTextGlitch(text, intensity, type) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear canvas before drawing text
+            const fontSize = 20 + intensity * 35; // Font size scales with intensity
+            ctx.font = `${fontSize}px monospace`; // Use a monospace font
+            ctx.textBaseline = 'top'; // Set text baseline to top for consistent line spacing
+
+            const padding = 20;
+            const maxLineWidth = canvas.width - padding * 2; // Calculate max line width considering padding
+            let currentX = padding;
+            let currentY = padding;
+            const lineHeight = fontSize * 1.5; // Line height based on font size
+
+            // Split text into words to handle wrapping
+            const words = text.split(' ');
+            let lineBuffer = ''; // Buffer to build current line
+
+            for (let i = 0; i < words.length; i++) {
+                const word = words[i];
+                const testLine = lineBuffer === '' ? word : lineBuffer + ' ' + word;
+                const testWidth = ctx.measureText(testLine).width;
+
+                // Handle explicit newlines within words (e.g., 'word1\nword2')
+                if (word.includes('\n')) {
+                    const parts = word.split('\n');
+                    for (let j = 0; j < parts.length; j++) {
+                        // Render the part that was before the newline or the first part
+                        if (lineBuffer !== '') {
+                            renderLine(lineBuffer, currentX, currentY, intensity, type, fontSize);
+                        }
+                        currentX = padding; // Reset X for new line
+                        currentY += lineHeight; // Move to next line
+                        lineBuffer = parts[j]; // Start new line with the part after the newline
+                    }
+                    // After processing all parts of the word with newlines,
+                    // update currentX to reflect the length of the last part
+                    currentX = padding + ctx.measureText(lineBuffer).width;
+                    continue; // Skip to next word
+                }
+
+                // Handle regular word wrapping for words without explicit newlines
+                if (testWidth > maxLineWidth && lineBuffer !== '') {
+                    // If adding the current word makes the line too long, render the buffered line
+                    renderLine(lineBuffer, padding, currentY, intensity, type, fontSize);
+                    currentX = padding; // Reset X for new line
+                    currentY += lineHeight; // Move to next line
+                    lineBuffer = word; // Start new line with the current word
+                } else {
+                    lineBuffer = testLine; // Add word to buffer
+                }
+
+                // If this is the last word, or the next word *definitely* starts a new line, render the current line buffer
+                if (i === words.length - 1 || (i + 1 < words.length && ctx.measureText(lineBuffer + ' ' + words[i+1]).width > maxLineWidth)) {
+                    renderLine(lineBuffer, padding, currentY, intensity, type, fontSize);
+                    currentX = padding; // Reset X for next line
+                    currentY += lineHeight; // Move to next line
+                    lineBuffer = ''; // Clear line buffer
+                }
+            }
+             // Render any remaining text in lineBuffer (e.g., if the last word didn't trigger wrapping logic)
+            if (lineBuffer !== '') {
+                renderLine(lineBuffer, padding, currentY, intensity, type, fontSize);
+            }
+        }
+
+        /**
+         * Main animation loop. This function is called repeatedly via requestAnimationFrame
+         * to draw and update the glitch effects on the canvas.
+         */
+        function animate() {
+            // Clear canvas completely if we are exclusively doing text glitch,
+            // or if no image is loaded. If an image is present and being glitched,
+            // the getImageData/putImageData will implicitly handle clearing relevant areas.
+            if (!currentImage || (currentImage && (distortionType === 'jitter' || distortionType === 'color_ghost'))) {
+                 ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+
+            if (currentImage) {
+                // If an image is loaded, draw it and apply image-specific glitches.
+                // Scale image to fit canvas while maintaining aspect ratio (letterboxing).
+                const aspectRatio = currentImage.width / currentImage.height;
+                let drawWidth = canvas.width;
+                let drawHeight = canvas.width / aspectRatio;
+
+                if (drawHeight > canvas.height) {
+                    drawHeight = canvas.height;
+                    drawWidth = canvas.height * aspectRatio;
+                }
+                
+                const offsetX = (canvas.width - drawWidth) / 2;
+                const offsetY = (canvas.height - drawHeight) / 2;
+
+                ctx.drawImage(currentImage, offsetX, offsetY, drawWidth, drawHeight);
+                
+                // Get the current pixel data from the canvas (which now includes the drawn image)
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                
+                // Apply image-specific distortion if the selected type is for images
+                if (distortionType === 'shift' || distortionType === 'color_jumble') {
+                    applyImageGlitch(imageData, intensity, distortionType);
+                }
+                
+                // Put the manipulated image data back onto the canvas
+                ctx.putImageData(imageData, 0, 0);
+
+                // If text is also present, and a text-specific distortion type is selected,
+                // overlay the glitched text on top of the (potentially glitched) image.
+                if (currentText && (distortionType === 'jitter' || distortionType === 'color_ghost')) {
+                    applyTextGlitch(currentText, intensity, distortionType);
+                } else if (currentText) {
+                    // If text is present but a non-text distortion is chosen, draw text normally
+                    ctx.fillStyle = 'white';
+                    ctx.font = '24px monospace';
+                    ctx.textAlign = 'left';
+                    ctx.textBaseline = 'top';
+                    ctx.fillText(currentText.substring(0,25) + (currentText.length > 25 ? '...' : ''), 20, canvas.height - 40); // Simple overlay text, not glitched
+                }
+
+            } else if (currentText) {
+                // If only text is present, apply text-specific glitches
+                applyTextGlitch(currentText, intensity, distortionType);
+            } else {
+                // Default message if no image or text is loaded
+                ctx.fillStyle = '#888';
+                ctx.font = '24px monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('Upload an image or type text to begin', canvas.width / 2, canvas.height / 2);
+            }
+
+            // Request the next animation frame to continue the loop
+            animationFrameId = requestAnimationFrame(animate);
+        }
+
+        /**
+         * Starts the animation loop. Any currently running animation is cancelled first.
+         */
+        function startAnimation() {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            animate();
+        }
+
+        /**
+         * Resizes the canvas element's internal drawing buffer to match its
+         * current display size (determined by CSS). This ensures sharp rendering.
+         * Then, it triggers a redraw.
+         */
+        function resizeCanvas() {
+            const rect = canvas.getBoundingClientRect(); // Get current display size of the canvas element
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+            // Ensure a reasonable minimum height if the CSS layout makes it too small
+            if (canvas.height < 200) {
+                canvas.height = 200;
+            }
+            startAnimation(); // Redraw content after canvas size changes
+        }
+
+        // --- Event Listeners ---
+
+        // Handle image file uploads
+        imageUploadInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        currentImage = img;
+                        currentText = ''; // Clear text input when an image is uploaded
+                        textInput.value = '';
+                        startAnimation(); // Restart animation with new image
+                    };
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            } else {
+                currentImage = null; // Clear image if no file is selected
+                startAnimation(); // Restart animation without image
+            }
+        });
+
+        // Handle text input changes
+        textInput.addEventListener('input', (event) => {
+            currentText = event.target.value;
+            currentImage = null; // Clear image when text is typed
+            imageUploadInput.value = ''; // Clear file input value
+            startAnimation(); // Restart animation with new text
+        });
+
+        // Handle intensity slider changes
+        intensitySlider.addEventListener('input', (event) => {
+            intensity = parseFloat(event.target.value);
+            startAnimation(); // Redraw with new intensity
+        });
+
+        // Handle distortion type selection changes
+        distortionTypeSelect.addEventListener('change', (event) => {
+            distortionType = event.target.value;
+            startAnimation(); // Redraw with new distortion type
+        });
+
+        // Handle window resizing to make the canvas responsive
+        window.addEventListener('resize', resizeCanvas);
+
+        // --- Initial Setup ---
+        resizeCanvas(); // Set initial canvas size based on CSS
+        // Set some default text to display on load
+        textInput.value = "Digital Static Weaver Glitch Art Generator";
+        currentText = textInput.value;
+        startAnimation(); // Start the animation loop with default text
+    </script>
+</body>
+</html>
